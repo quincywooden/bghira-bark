@@ -10,6 +10,7 @@ def text_to_semantic(
     history_prompt: Optional[Union[Dict, str]] = None,
     temp: float = 0.7,
     silent: bool = False,
+    max_gen_duration_s = 13
 ):
     """Generate semantic array from text.
 
@@ -27,7 +28,8 @@ def text_to_semantic(
         history_prompt=history_prompt,
         temp=temp,
         silent=silent,
-        use_kv_caching=True
+        use_kv_caching=True,
+        max_gen_duration_s=max_gen_duration_s
     )
     return x_semantic
 
@@ -90,6 +92,7 @@ def generate_audio(
     waveform_temp: float = 0.7,
     silent: bool = False,
     output_full: bool = False,
+    max_gen_duration_s = 13
 ):
     """Generate audio array from input text.
 
@@ -109,6 +112,7 @@ def generate_audio(
         history_prompt=history_prompt,
         temp=text_temp,
         silent=silent,
+        max_gen_duration_s=max_gen_duration_s
     )
     out = semantic_to_waveform(
         semantic_tokens,
