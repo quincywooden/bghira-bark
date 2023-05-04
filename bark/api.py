@@ -57,7 +57,7 @@ def semantic_to_waveform(
         history_prompt=history_prompt,
         temp=temp,
         silent=silent,
-        sliding_window_len=sliding_window_len
+        sliding_window_len=sliding_window_len,
         use_kv_caching=True
     )
     fine_tokens = generate_fine(
