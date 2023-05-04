@@ -80,7 +80,7 @@ CACHE_DIR = os.path.join(os.getenv("XDG_CACHE_HOME", default_cache_dir), "suno",
 
 USE_SMALL_MODELS = os.environ.get("SUNO_USE_SMALL_MODELS", False)
 GLOBAL_ENABLE_MPS = os.environ.get("SUNO_ENABLE_MPS", False)
-OFFLOAD_CPU = os.environ.get("SUNO_OFFLOAD_CPU", False)
+OFFLOAD_CPU = os.environ.get("SUNO_OFFLOAD_CPU", True)
 
 
 REMOTE_MODEL_PATHS = {
