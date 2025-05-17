@@ -1,32 +1,14 @@
 # 🐶 Bark
-
-**This fork exists only to move the v2 assets into the default asset paths, and merge the available voices with those found in other projects.**
-
-[![](https://dcbadge.vercel.app/api/server/J2B2vsjKuE?style=flat&compact=True)](https://discord.gg/J2B2vsjKuE)
-[![Twitter](https://img.shields.io/twitter/url/https/twitter.com/OnusFM.svg?style=social&label=@OnusFM)](https://twitter.com/OnusFM)
-<a href="http://www.repostatus.org/#active"><img src="http://www.repostatus.org/badges/latest/active.svg" /></a>
-
-[Examples](https://suno-ai.notion.site/Bark-Examples-5edae8b02a604b54a42244ba45ebc2e2) • [Suno Studio Waitlist](https://3os84zs17th.typeform.com/suno-studio) • [Updates](#-updates) • [How to Use](#-usage-in-python) • [Installation](#-installation) • [FAQ](#-faq)
-
-[//]: <br> (vertical spaces around image)
-<br>
-<p align="center">
-<img src="https://user-images.githubusercontent.com/5068315/235310676-a4b3b511-90ec-4edf-8153-7ccf14905d73.png" width="500"></img>
-</p>
-<br>
-
-Bark is a transformer-based text-to-audio model created by [Suno](https://suno.ai). Bark can generate highly realistic, multilingual speech as well as other audio - including music, background noise and simple sound effects. The model can also produce nonverbal communications like laughing, sighing and crying. To support the research community, we are providing access to pretrained model checkpoints, which are ready for inference and available for commercial use.
-
-## ⚠ Disclaimer
-Bark was developed for research purposes. It is not a conventional text-to-speech model but instead a fully generative text-to-audio model, which can deviate in unexpected ways from provided prompts. Suno does not take responsibility for any output generated. Use at your own risk, and please act responsibly.
-
-## 🎧 Demos  
-
-[![Open in Spaces](https://img.shields.io/badge/🤗-Open%20in%20Spaces-blue.svg)](https://huggingface.co/spaces/suno/bark)
-[![Open on Replicate](https://img.shields.io/badge/®️-Open%20on%20Replicate-blue.svg)](https://replicate.com/suno-ai/bark)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1eJfA2XUa-mXwdMy7DoYKVYHI1iTd9Vkt?usp=sharing)
-
 ## 🚀 Updates
+
+**2025.05.17**
+- MultiGPU inference example added to run a large script and combine the outputs at the end
+- Uses torch.compile with max-autotune across all models by default
+- Uses padded attention masks to support batched inference
+- SageAttention will be used automatically if installed
+  - Compatible with batch inference and torch compile
+
+On a 3x 4090 system, this can bring long inference job runtimes down from 2-5 minutes to 30-60 seconds.
 
 **2023.05.01**
 - ©️ Bark is now licensed under the MIT License, meaning it's now available for commercial use!  
