@@ -10,7 +10,13 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 from .model import GPT, GPTConfig, MLP
-
+try:
+    from sageattention import sageattn
+    USE_SAGE = True
+    print("Using SageAttention")
+except ImportError:
+    USE_SAGE = False
+    print("SageAttention not installed, using standard attention")
 
 class NonCausalSelfAttention(nn.Module):
     def __init__(self, config):
@@ -26,39 +32,59 @@ class NonCausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
-        # flash attention make GPU go brrrrr but support is only in PyTorch nightly and still a bit scary
-        self.flash = (
-            hasattr(torch.nn.functional, "scaled_dot_product_attention") and self.dropout == 0.0
-        )
+        # -------  Try SpargeAttn first  ------------------------
+        try:
+            from spas_sage_attn import spas_sage2_attn_meansim_cuda as _sparge_attn
+            self._sparge_attn = _sparge_attn
+        except ImportError:
+            self._sparge_attn = None
+
+        # -------  Then SageAttention  -------------------------
+        try:
+            from sageattention import sageattn as _sage_attn
+            self._sage_attn = _sage_attn
+        except ImportError:
+            self._sage_attn = None
+
+        # Booleans we’ll check in forward()
+        self.use_sparge = self._sparge_attn is not None and torch.cuda.is_available()
+        self.use_sage   = (not self.use_sparge) and self._sage_attn is not None and torch.cuda.is_available()
 
     def forward(self, x):
-        B, T, C = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
+        B, T, C = x.size()
 
-        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2).contiguous()
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2).contiguous()
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2).contiguous()
 
-        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        if self.flash:
-            # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(
+        if self.use_sparge:
+            # —— SpargeAttn (meansim variant) ————————————————
+            y = self._sparge_attn(
+                q, k, v,
+                simthreshd1 = 0.50,   # tweak or expose via config if desired
+                cdfthreshd  = 0.97,
+                is_causal   = False
+            )
+        elif self.use_sage:
+            # —— SageAttention ——————————————————————————————
+            y = self._sage_attn(q, k, v, dropout_p=self.dropout, is_causal=False)
+        elif hasattr(F, "scaled_dot_product_attention"):
+            # —— PyTorch Flash-Attn / SDPA ————————————————
+            y = F.scaled_dot_product_attention(
                 q, k, v, attn_mask=None, dropout_p=self.dropout, is_causal=False
             )
         else:
-            # manual implementation of attention
+            # —— Classic softmax mat-mul fallback ————————————
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
-            y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = (
-            y.transpose(1, 2).contiguous().view(B, T, C)
-        )  # re-assemble all head outputs side by side
+            y = att @ v
 
-        # output projection
+        y = y.transpose(1, 2).contiguous().view(B, T, C)
         y = self.resid_dropout(self.c_proj(y))
         return y
+
 
 
 class FineBlock(nn.Module):
