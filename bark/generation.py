@@ -547,7 +547,7 @@ def generate_coarse(
     silent=False,
     max_coarse_history=630,  # min 60 (faster), max 630 (more context)
     sliding_window_len=60,
-    use_kv_caching=False,
+    use_kv_caching=True,
 ):
     """Generate coarse audio codes from semantic tokens."""
     assert (
@@ -704,7 +704,7 @@ def generate_coarse(
 def generate_fine(
     x_coarse_gen,
     history_prompt=None,
-    temp=0.5,
+    temp=0.6,
     silent=True,
 ):
     """Generate full audio codes from coarse audio codes."""

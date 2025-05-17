@@ -21,7 +21,10 @@ except ImportError:
 try:
     from sageattention import sageattn as _sage_direct
     from sageattention import sageattn_varlen as _sage_varlen
-except ImportError:
+
+    print("Using SageAttention.")
+except ImportError as e:
+    print(f"SageAttention not available: {e}")
     _sage_direct = None
     _sage_varlen = None
 
