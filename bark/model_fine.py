@@ -111,7 +111,7 @@ class NonCausalSelfAttention(nn.Module):
                 q,
                 k,
                 v,
-                key_padding_mask=pad_mask,
+                attn_mask=pad_mask,
                 dropout_p=self.dropout,
                 is_causal=False,
             )
