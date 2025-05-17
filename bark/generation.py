@@ -17,6 +17,36 @@ from huggingface_hub import hf_hub_download
 from .model import GPTConfig, GPT
 from .model_fine import FineGPT, FineGPTConfig
 
+_TORCH23_PLUS = tuple(int(x) for x in torch.__version__.split(".")[:2]) >= (2, 3)
+
+COMPILE_KW = dict(
+    mode="reduce-overhead",  # good default for small, latency‑sensitive batches
+    fullgraph=False,          # allow custom CUDA ops (Sparge/Sage) outside graph
+    dynamic=True,             # one graph for all prompt lengths
+)
+
+
+def maybe_compile(model: torch.nn.Module, *, tag: str = "", **kwargs):
+    """Compile *model* with `torch.compile` when it makes sense.
+
+    Set the env var `SUNO_DISABLE_COMPILE` to skip compilation without code
+    changes.
+    """
+    if (
+        _TORCH23_PLUS
+        and torch.cuda.is_available()
+        and not os.getenv("SUNO_DISABLE_COMPILE")
+    ):
+        try:
+            logging.info(f"[torch.compile] Compiling {tag or model.__class__.__name__} …")
+            return torch.compile(model, **(kwargs or COMPILE_KW))
+        except Exception as err:
+            logging.warning(
+                f"[torch.compile] Failed for {tag}: {err}. Falling back to eager."
+            )
+            return model
+    return model
+
 if (
     torch.cuda.is_available() and
     hasattr(torch.cuda, "amp") and
@@ -110,7 +140,6 @@ REMOTE_MODEL_PATHS = {
     },
 }
 
-
 if not hasattr(torch.nn.functional, 'scaled_dot_product_attention') and torch.cuda.is_available():
     logger.warning(
         "torch version does not support flash attention. You will get faster" +
@@ -182,67 +211,65 @@ def clean_models(model_key=None):
 
 
 def _load_model(ckpt_path, device, use_small=False, model_type="text"):
+    """Load & (optionally) compile a GPT or FineGPT checkpoint."""
+
+    # pick config / class based on model_type
     if model_type == "text":
-        ConfigClass = GPTConfig
-        ModelClass = GPT
+        ConfigClass, ModelClass = GPTConfig, GPT
     elif model_type == "coarse":
-        ConfigClass = GPTConfig
-        ModelClass = GPT
+        ConfigClass, ModelClass = GPTConfig, GPT
     elif model_type == "fine":
-        ConfigClass = FineGPTConfig
-        ModelClass = FineGPT
+        ConfigClass, ModelClass = FineGPTConfig, FineGPT
     else:
-        raise NotImplementedError()
+        raise NotImplementedError(model_type)
+
+    # resolve ckpt path (may download)
     model_key = f"{model_type}_small" if use_small or USE_SMALL_MODELS else model_type
-    model_info = REMOTE_MODEL_PATHS[model_key]
+    info = REMOTE_MODEL_PATHS[model_key]
     if not os.path.exists(ckpt_path):
-        logger.info(f"{model_type} model not found, downloading into `{CACHE_DIR}`.")
-        _download(model_info["repo_id"], model_info["file_name"])
+        logger.info(f"{model_type} checkpoint missing → downloading to {CACHE_DIR} …")
+        _download(info["repo_id"], info["file_name"])
+
     checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
-    # this is a hack
+
+    # handle old ckpts missing new keys
     model_args = checkpoint["model_args"]
     if "input_vocab_size" not in model_args:
         model_args["input_vocab_size"] = model_args["vocab_size"]
         model_args["output_vocab_size"] = model_args["vocab_size"]
         del model_args["vocab_size"]
-    gptconf = ConfigClass(**checkpoint["model_args"])
-    model = ModelClass(gptconf)
-    state_dict = checkpoint["model"]
-    # fixup checkpoint
-    unwanted_prefix = "_orig_mod."
-    for k, v in list(state_dict.items()):
-        if k.startswith(unwanted_prefix):
-            state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
-    extra_keys = set(state_dict.keys()) - set(model.state_dict().keys())
-    extra_keys = set([k for k in extra_keys if not k.endswith(".attn.bias")])
-    missing_keys = set(model.state_dict().keys()) - set(state_dict.keys())
-    missing_keys = set([k for k in missing_keys if not k.endswith(".attn.bias")])
-    if len(extra_keys) != 0:
-        raise ValueError(f"extra keys found: {extra_keys}")
-    if len(missing_keys) != 0:
-        raise ValueError(f"missing keys: {missing_keys}")
-    model.load_state_dict(state_dict, strict=False)
+
+    model = ModelClass(ConfigClass(**model_args))
+    model.load_state_dict(_fix_checkpoint_keys(checkpoint["model"]))
+
+    # —> Compile here (GPU‑only; guarded)  <—
+    model = maybe_compile(model, tag=model_type)
+
+    model.eval().to(device)
+
     n_params = model.get_num_params()
-    val_loss = checkpoint["best_val_loss"].item()
-    logger.info(f"model loaded: {round(n_params/1e6,1)}M params, {round(val_loss,3)} loss")
-    model.eval()
-    model.to(device)
-    del checkpoint, state_dict
-    _clear_cuda_cache()
+    logger.info(
+        f"{model_type} loaded: {round(n_params/1e6,1)} M params, "
+        f"val‑loss={checkpoint['best_val_loss']:.3f}"
+    )
+
+    # tokenizer only for text model
     if model_type == "text":
         tokenizer = BertTokenizer.from_pretrained("bert-base-multilingual-cased")
-        return {
-            "model": model,
-            "tokenizer": tokenizer,
-        }
+        return {"model": model, "tokenizer": tokenizer}
+
     return model
 
 
-def _load_codec_model(device):
+def _load_codec_model(device: str):
+    """Load & compile the EnCodec 24 kHz decoder."""
     model = EncodecModel.encodec_model_24khz()
     model.set_target_bandwidth(6.0)
-    model.eval()
-    model.to(device)
+
+    # —> compile decoder too  <—
+    model.decoder = maybe_compile(model.decoder, tag="encodec_decoder")
+
+    model.eval().to(device)
     _clear_cuda_cache()
     return model
 
@@ -288,6 +315,12 @@ def load_codec_model(use_gpu=True, force_reload=False):
     models[model_key].to(device)
     return models[model_key]
 
+def _fix_checkpoint_keys(state_dict):
+    unwanted_prefix = "_orig_mod."
+    for k in list(state_dict.keys()):
+        if k.startswith(unwanted_prefix):
+            state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
+    return state_dict
 
 def preload_models(
     text_use_gpu=True,
