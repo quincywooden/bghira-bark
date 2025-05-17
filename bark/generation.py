@@ -13,6 +13,7 @@ import torch.nn.functional as F
 import tqdm
 from transformers import BertTokenizer
 from huggingface_hub import hf_hub_download
+from typing import Optional
 
 from .model import GPTConfig, GPT
 from .model_fine import FineGPT, FineGPTConfig
@@ -21,8 +22,8 @@ _TORCH23_PLUS = tuple(int(x) for x in torch.__version__.split(".")[:2]) >= (2, 3
 
 COMPILE_KW = dict(
     mode="reduce-overhead",  # good default for small, latency‑sensitive batches
-    fullgraph=False,          # allow custom CUDA ops (Sparge/Sage) outside graph
-    dynamic=True,             # one graph for all prompt lengths
+    fullgraph=False,  # allow custom CUDA ops (Sparge/Sage) outside graph
+    dynamic=True,  # one graph for all prompt lengths
 )
 
 
@@ -32,30 +33,26 @@ def maybe_compile(model: torch.nn.Module, *, tag: str = "", **kwargs):
     Set the env var `SUNO_DISABLE_COMPILE` to skip compilation without code
     changes.
     """
-    if (
-        _TORCH23_PLUS
-        and torch.cuda.is_available()
-        and not os.getenv("SUNO_DISABLE_COMPILE")
-    ):
+    if _TORCH23_PLUS and torch.cuda.is_available() and not os.getenv("SUNO_DISABLE_COMPILE"):
         try:
             logging.info(f"[torch.compile] Compiling {tag or model.__class__.__name__} …")
             return torch.compile(model, **(kwargs or COMPILE_KW))
         except Exception as err:
-            logging.warning(
-                f"[torch.compile] Failed for {tag}: {err}. Falling back to eager."
-            )
+            logging.warning(f"[torch.compile] Failed for {tag}: {err}. Falling back to eager.")
             return model
     return model
 
+
 if (
-    torch.cuda.is_available() and
-    hasattr(torch.cuda, "amp") and
-    hasattr(torch.cuda.amp, "autocast") and
-    hasattr(torch.cuda, "is_bf16_supported") and
-    torch.cuda.is_bf16_supported()
+    torch.cuda.is_available()
+    and hasattr(torch.cuda, "amp")
+    and hasattr(torch.cuda.amp, "autocast")
+    and hasattr(torch.cuda, "is_bf16_supported")
+    and torch.cuda.is_bf16_supported()
 ):
     autocast = funcy.partial(torch.cuda.amp.autocast, dtype=torch.bfloat16)
 else:
+
     @contextlib.contextmanager
     def autocast():
         yield
@@ -140,10 +137,10 @@ REMOTE_MODEL_PATHS = {
     },
 }
 
-if not hasattr(torch.nn.functional, 'scaled_dot_product_attention') and torch.cuda.is_available():
+if not hasattr(torch.nn.functional, "scaled_dot_product_attention") and torch.cuda.is_available():
     logger.warning(
-        "torch version does not support flash attention. You will get faster" +
-        " inference speed by upgrade torch to newest nightly version."
+        "torch version does not support flash attention. You will get faster"
+        + " inference speed by upgrade torch to newest nightly version."
     )
 
 
@@ -315,12 +312,14 @@ def load_codec_model(use_gpu=True, force_reload=False):
     models[model_key].to(device)
     return models[model_key]
 
+
 def _fix_checkpoint_keys(state_dict):
     unwanted_prefix = "_orig_mod."
     for k in list(state_dict.keys()):
         if k.startswith(unwanted_prefix):
             state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
     return state_dict
+
 
 def preload_models(
     text_use_gpu=True,
@@ -385,9 +384,9 @@ def _load_history_prompt(history_prompt_input):
             os.path.join(CUR_PATH, "assets", "prompts", f"{history_prompt_input}.npz")
         )
     elif isinstance(history_prompt_input, dict):
-        assert("semantic_prompt" in history_prompt_input)
-        assert("coarse_prompt" in history_prompt_input)
-        assert("fine_prompt" in history_prompt_input)
+        assert "semantic_prompt" in history_prompt_input
+        assert "coarse_prompt" in history_prompt_input
+        assert "fine_prompt" in history_prompt_input
         history_prompt = history_prompt_input
     else:
         raise ValueError("history prompt format unrecognized")
@@ -395,144 +394,131 @@ def _load_history_prompt(history_prompt_input):
 
 
 def generate_text_semantic(
-    text,
-    history_prompt=None,
-    temp=0.7,
-    top_k=None,
-    top_p=None,
-    silent=False,
-    min_eos_p=0.2,
-    max_gen_duration_s=None,
-    allow_early_stop=True,
-    use_kv_caching=False,
+    text: str,
+    history_prompt: Optional[dict | str] = None,
+    *,
+    temp: float = 0.7,
+    top_k: Optional[int] = None,
+    top_p: Optional[float] = None,
+    silent: bool = False,
+    min_eos_p: float = 0.2,
+    max_gen_duration_s: Optional[float] = None,
+    allow_early_stop: bool = True,
+    use_kv_caching: bool = False,
 ):
-    """Generate semantic tokens from text."""
-    assert isinstance(text, str)
+    """Generate semantic tokens from *text* using the patched fast path."""
+
     text = _normalize_whitespace(text)
-    assert len(text.strip()) > 0
+    if not text:
+        raise ValueError("Prompt text must be non‑empty")
+
+    # 1. Handle history prompt ------------------------------------------------
     if history_prompt is not None:
-        history_prompt = _load_history_prompt(history_prompt)
-        semantic_history = history_prompt["semantic_prompt"]
-        assert (
-            isinstance(semantic_history, np.ndarray)
-            and len(semantic_history.shape) == 1
-            and len(semantic_history) > 0
-            and semantic_history.min() >= 0
-            and semantic_history.max() <= SEMANTIC_VOCAB_SIZE - 1
-        )
+        hp = _load_history_prompt(history_prompt)
+        semantic_history = hp["semantic_prompt"].astype(np.int64)
+        assert semantic_history.ndim == 1 and semantic_history.max() < SEMANTIC_VOCAB_SIZE
     else:
         semantic_history = None
-    # load models if not yet exist
-    global models
-    global models_devices
+
+    # 2. Retrieve model & tokenizer ------------------------------------------
     if "text" not in models:
         preload_models()
-    model_container = models["text"]
-    model = model_container["model"]
-    tokenizer = model_container["tokenizer"]
-    encoded_text = np.array(_tokenize(tokenizer, text)) + TEXT_ENCODING_OFFSET
+    container = models["text"]
+    model, tokenizer = container["model"], container["tokenizer"]
     if OFFLOAD_CPU:
         model.to(models_devices["text"])
     device = next(model.parameters()).device
-    if len(encoded_text) > 256:
-        p = round((len(encoded_text) - 256) / len(encoded_text) * 100, 1)
-        logger.warning(f"warning, text too long, lopping of last {p}%")
-        encoded_text = encoded_text[:256]
-    encoded_text = np.pad(
-        encoded_text,
-        (0, 256 - len(encoded_text)),
-        constant_values=TEXT_PAD_TOKEN,
-        mode="constant",
-    )
+
+    # 3. Encode text & history ------------------------------------------------
+    tok = np.array(_tokenize(tokenizer, text)) + TEXT_ENCODING_OFFSET
+    if tok.size > 256:
+        logger.warning(
+            "prompt too long, truncating to 256 tokens (%.1f%% removed)",
+            (tok.size - 256) / tok.size * 100,
+        )
+        tok = tok[:256]
+    tok = np.pad(tok, (0, 256 - tok.size), constant_values=TEXT_PAD_TOKEN)
+
     if semantic_history is not None:
-        semantic_history = semantic_history.astype(np.int64)
-        # lop off if history is too long, pad if needed
         semantic_history = semantic_history[-256:]
         semantic_history = np.pad(
-            semantic_history,
-            (0, 256 - len(semantic_history)),
-            constant_values=SEMANTIC_PAD_TOKEN,
-            mode="constant",
+            semantic_history, (0, 256 - semantic_history.size), constant_values=SEMANTIC_PAD_TOKEN
         )
     else:
-        semantic_history = np.array([SEMANTIC_PAD_TOKEN] * 256)
-    x = torch.from_numpy(
-        np.hstack([
-            encoded_text, semantic_history, np.array([SEMANTIC_INFER_TOKEN])
-        ]).astype(np.int64)
-    )[None]
-    assert x.shape[1] == 256 + 256 + 1
+        semantic_history = np.full(256, SEMANTIC_PAD_TOKEN, dtype=np.int64)
+
+    x_np = np.hstack([tok, semantic_history, [SEMANTIC_INFER_TOKEN]]).astype(np.int64)
+    x = torch.from_numpy(x_np).unsqueeze(0).to(device)
+
+    # 4. Pre‑allocate tensor for new tokens -----------------------------------
+    n_tot_steps = 768
+    x_initial = x.shape[1]
+    x = torch.hstack([x, torch.empty((1, n_tot_steps), dtype=torch.int32, device=device)])
+
+    kv_cache = None
+    tot_gen_dur = 0.0
+    pbar = tqdm.tqdm(total=n_tot_steps, disable=silent)
+
     with _inference_mode():
-        x = x.to(device)
-        n_tot_steps = 768
-        # custom tqdm updates since we don't know when eos will occur
-        pbar = tqdm.tqdm(disable=silent, total=100)
-        pbar_state = 0
-        tot_generated_duration_s = 0
-        kv_cache = None
         for n in range(n_tot_steps):
+            # Input selection for KV caching
             if use_kv_caching and kv_cache is not None:
-                x_input = x[:, [-1]]
+                x_input = x[:, [x_initial + n - 1]]
             else:
-                x_input = x
+                x_input = x[:, : x_initial + n]
+
             logits, kv_cache = model(
                 x_input, merge_context=True, use_cache=use_kv_caching, past_kv=kv_cache
             )
-            relevant_logits = logits[0, 0, :SEMANTIC_VOCAB_SIZE]
+            logits = logits[0, 0]
+            relevant_logits = logits[:SEMANTIC_VOCAB_SIZE]
             if allow_early_stop:
-                relevant_logits = torch.hstack(
-                    (relevant_logits, logits[0, 0, [SEMANTIC_PAD_TOKEN]])  # eos
-                )
+                relevant_logits = torch.concat([relevant_logits, logits[[SEMANTIC_PAD_TOKEN]]])
+
+            # top‑p / top‑k filtering
             if top_p is not None:
-                # faster to convert to numpy
-                logits_device = relevant_logits.device
-                logits_dtype = relevant_logits.type()
-                relevant_logits = relevant_logits.detach().cpu().type(torch.float32).numpy()
-                sorted_indices = np.argsort(relevant_logits)[::-1]
-                sorted_logits = relevant_logits[sorted_indices]
-                cumulative_probs = np.cumsum(softmax(sorted_logits))
-                sorted_indices_to_remove = cumulative_probs > top_p
-                sorted_indices_to_remove[1:] = sorted_indices_to_remove[:-1].copy()
-                sorted_indices_to_remove[0] = False
-                relevant_logits[sorted_indices[sorted_indices_to_remove]] = -np.inf
-                relevant_logits = torch.from_numpy(relevant_logits)
-                relevant_logits = relevant_logits.to(logits_device).type(logits_dtype)
+                cpu_logits = relevant_logits.detach().cpu().float().numpy()
+                order = np.argsort(cpu_logits)[::-1]
+                cum = np.cumsum(softmax(cpu_logits[order]))
+                cpu_logits[order[cum > top_p]] = -np.inf
+                relevant_logits = (
+                    torch.from_numpy(cpu_logits)
+                    .to(relevant_logits.device)
+                    .type(relevant_logits.dtype)
+                )
             if top_k is not None:
-                v, _ = torch.topk(relevant_logits, min(top_k, relevant_logits.size(-1)))
-                relevant_logits[relevant_logits < v[-1]] = -float("Inf")
+                v, _ = torch.topk(relevant_logits, min(top_k, relevant_logits.numel()))
+                relevant_logits[relevant_logits < v[-1]] = -float("inf")
+
             probs = F.softmax(relevant_logits / temp, dim=-1)
-            # multinomial bugged on mps: shuttle to cpu if necessary
-            inf_device = probs.device
-            if probs.device.type == "mps":
-                probs = probs.to("cpu")
-            item_next = torch.multinomial(probs, num_samples=1)
-            probs = probs.to(inf_device)
-            item_next = item_next.to(inf_device)
+            if probs.device.type == "mps":  # multinomial bug workaround
+                probs_cpu = probs.cpu()
+                sample = torch.multinomial(probs_cpu, 1).to(probs.device)
+            else:
+                sample = torch.multinomial(probs, 1)
+
+            # Early‑stop check --------------------------------------------------
             if allow_early_stop and (
-                item_next == SEMANTIC_VOCAB_SIZE
-                or (min_eos_p is not None and probs[-1] >= min_eos_p)
+                sample.item() == SEMANTIC_VOCAB_SIZE or (min_eos_p and probs[-1] >= min_eos_p)
             ):
-                # eos found, so break
-                pbar.update(100 - pbar_state)
+                n -= 1  # exclude eos from slice
+                pbar.update(n + 1 - pbar.n)
                 break
-            x = torch.cat((x, item_next[None]), dim=1)
-            tot_generated_duration_s += 1 / SEMANTIC_RATE_HZ
-            if max_gen_duration_s is not None and tot_generated_duration_s > max_gen_duration_s:
-                pbar.update(100 - pbar_state)
+
+            # Write token into slot & continue ---------------------------------
+            x[0, x_initial + n] = sample
+            tot_gen_dur += 1 / SEMANTIC_RATE_HZ
+            pbar.update(1)
+
+            if max_gen_duration_s and tot_gen_dur > max_gen_duration_s:
                 break
-            if n == n_tot_steps - 1:
-                pbar.update(100 - pbar_state)
-                break
-            del logits, relevant_logits, probs, item_next
-            req_pbar_state = np.min([100, int(round(100 * n / n_tot_steps))])
-            if req_pbar_state > pbar_state:
-                pbar.update(req_pbar_state - pbar_state)
-            pbar_state = req_pbar_state
         pbar.close()
-        out = x.detach().cpu().numpy().squeeze()[256 + 256 + 1 :]
+
     if OFFLOAD_CPU:
         model.to("cpu")
-    assert all(0 <= out) and all(out < SEMANTIC_VOCAB_SIZE)
+
+    out = x.detach().cpu().numpy().squeeze()[x_initial : x_initial + n + 1]
+    assert (0 <= out).all() and (out < SEMANTIC_VOCAB_SIZE).all()
     _clear_cuda_cache()
     return out
 
@@ -667,12 +653,8 @@ def generate_coarse(
                     x_input = x_in
 
                 logits, kv_cache = model(x_input, use_cache=use_kv_caching, past_kv=kv_cache)
-                logit_start_idx = (
-                    SEMANTIC_VOCAB_SIZE + (1 - int(is_major_step)) * CODEBOOK_SIZE
-                )
-                logit_end_idx = (
-                    SEMANTIC_VOCAB_SIZE + (2 - int(is_major_step)) * CODEBOOK_SIZE
-                )
+                logit_start_idx = SEMANTIC_VOCAB_SIZE + (1 - int(is_major_step)) * CODEBOOK_SIZE
+                logit_end_idx = SEMANTIC_VOCAB_SIZE + (2 - int(is_major_step)) * CODEBOOK_SIZE
                 relevant_logits = logits[0, 0, logit_start_idx:logit_end_idx]
                 if top_p is not None:
                     # faster to convert to numpy

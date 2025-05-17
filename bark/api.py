@@ -9,7 +9,7 @@ def text_to_semantic(
     text: str,
     history_prompt: Optional[Union[Dict, str]] = None,
     temp: float = 0.7,
-    silent: bool = False
+    silent: bool = False,
 ):
     """Generate semantic array from text.
 
@@ -38,7 +38,7 @@ def semantic_to_waveform(
     temp: float = 0.7,
     silent: bool = False,
     output_full: bool = False,
-    sliding_window_len: int = 60
+    sliding_window_len: int = 60,
 ):
     """Generate audio array from semantic input.
 
@@ -58,7 +58,7 @@ def semantic_to_waveform(
         temp=temp,
         silent=silent,
         sliding_window_len=sliding_window_len,
-        use_kv_caching=True
+        use_kv_caching=True,
     )
     fine_tokens = generate_fine(
         coarse_tokens,
@@ -77,11 +77,11 @@ def semantic_to_waveform(
 
 
 def save_as_prompt(filepath, full_generation):
-    assert(filepath.endswith(".npz"))
-    assert(isinstance(full_generation, dict))
-    assert("semantic_prompt" in full_generation)
-    assert("coarse_prompt" in full_generation)
-    assert("fine_prompt" in full_generation)
+    assert filepath.endswith(".npz")
+    assert isinstance(full_generation, dict)
+    assert "semantic_prompt" in full_generation
+    assert "coarse_prompt" in full_generation
+    assert "fine_prompt" in full_generation
     np.savez(filepath, **full_generation)
 
 
@@ -92,7 +92,7 @@ def generate_audio(
     waveform_temp: float = 0.7,
     silent: bool = False,
     output_full: bool = False,
-    sliding_window_len = 60,
+    sliding_window_len=60,
 ):
     """Generate audio array from input text.
 
@@ -108,10 +108,7 @@ def generate_audio(
         numpy audio array at sample frequency 24khz
     """
     semantic_tokens = text_to_semantic(
-        text,
-        history_prompt=history_prompt,
-        temp=text_temp,
-        silent=silent
+        text, history_prompt=history_prompt, temp=text_temp, silent=silent
     )
     out = semantic_to_waveform(
         semantic_tokens,
@@ -119,7 +116,7 @@ def generate_audio(
         temp=waveform_temp,
         silent=silent,
         output_full=output_full,
-        sliding_window_len=sliding_window_len
+        sliding_window_len=sliding_window_len,
     )
     if output_full:
         full_generation, audio_arr = out

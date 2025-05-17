@@ -10,13 +10,16 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 from .model import GPT, GPTConfig, MLP
+
 try:
     from sageattention import sageattn
+
     USE_SAGE = True
     print("Using SageAttention")
 except ImportError:
     USE_SAGE = False
     print("SageAttention not installed, using standard attention")
+
 
 class NonCausalSelfAttention(nn.Module):
     def __init__(self, config):
@@ -35,6 +38,7 @@ class NonCausalSelfAttention(nn.Module):
         # -------  Try SpargeAttn first  ------------------------
         try:
             from spas_sage_attn import spas_sage2_attn_meansim_cuda as _sparge_attn
+
             self._sparge_attn = _sparge_attn
         except ImportError:
             self._sparge_attn = None
@@ -42,13 +46,16 @@ class NonCausalSelfAttention(nn.Module):
         # -------  Then SageAttention  -------------------------
         try:
             from sageattention import sageattn as _sage_attn
+
             self._sage_attn = _sage_attn
         except ImportError:
             self._sage_attn = None
 
         # Booleans we’ll check in forward()
         self.use_sparge = self._sparge_attn is not None and torch.cuda.is_available()
-        self.use_sage   = (not self.use_sparge) and self._sage_attn is not None and torch.cuda.is_available()
+        self.use_sage = (
+            (not self.use_sparge) and self._sage_attn is not None and torch.cuda.is_available()
+        )
 
     def forward(self, x):
         B, T, C = x.size()
@@ -61,10 +68,12 @@ class NonCausalSelfAttention(nn.Module):
         if self.use_sparge:
             # —— SpargeAttn (meansim variant) ————————————————
             y = self._sparge_attn(
-                q, k, v,
-                simthreshd1 = 0.50,   # tweak or expose via config if desired
-                cdfthreshd  = 0.97,
-                is_causal   = False
+                q,
+                k,
+                v,
+                simthreshd1=0.50,  # tweak or expose via config if desired
+                cdfthreshd=0.97,
+                is_causal=False,
             )
         elif self.use_sage:
             # —— SageAttention ——————————————————————————————
@@ -84,7 +93,6 @@ class NonCausalSelfAttention(nn.Module):
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         y = self.resid_dropout(self.c_proj(y))
         return y
-
 
 
 class FineBlock(nn.Module):
