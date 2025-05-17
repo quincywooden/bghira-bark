@@ -46,12 +46,12 @@ def maybe_compile(model: torch.nn.Module, *, tag: str = "", **kwargs):
 
 if (
     torch.cuda.is_available()
-    and hasattr(torch.cuda, "amp")
-    and hasattr(torch.cuda.amp, "autocast")
+    and hasattr(torch, "amp")
+    and hasattr(torch.amp, "autocast")
     and hasattr(torch.cuda, "is_bf16_supported")
     and torch.cuda.is_bf16_supported()
 ):
-    autocast = funcy.partial(torch.cuda.amp.autocast, dtype=torch.bfloat16)
+    autocast = funcy.partial(torch.amp.autocast, dtype=torch.bfloat16)
 else:
 
     @contextlib.contextmanager
@@ -188,7 +188,7 @@ if torch.cuda.is_available():
 
 @contextlib.contextmanager
 def _inference_mode():
-    with InferenceContext(), torch.inference_mode(), torch.no_grad(), autocast():
+    with InferenceContext(), torch.inference_mode(), torch.no_grad(), autocast(device_type="cuda"):
         yield
 
 
