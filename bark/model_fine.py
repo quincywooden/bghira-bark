@@ -68,7 +68,7 @@ class NonCausalSelfAttention(nn.Module):
             )
         elif self.use_sage:
             # —— SageAttention ——————————————————————————————
-            y = self._sage_attn(q, k, v, dropout_p=self.dropout, is_causal=False)
+            y = self._sage_attn(q, k, v, is_causal=False)
         elif hasattr(F, "scaled_dot_product_attention"):
             # —— PyTorch Flash-Attn / SDPA ————————————————
             y = F.scaled_dot_product_attention(
