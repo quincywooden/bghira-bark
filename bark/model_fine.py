@@ -2,6 +2,7 @@
 Much of this code is adapted from Andrej Karpathy's NanoGPT
 (https://github.com/karpathy/nanoGPT)
 """
+
 from dataclasses import dataclass
 import math
 

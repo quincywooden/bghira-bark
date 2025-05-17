@@ -36,6 +36,7 @@ def maybe_compile(model: torch.nn.Module, *, tag: str = "", **kwargs):
     if _TORCH23_PLUS and torch.cuda.is_available() and not os.getenv("SUNO_DISABLE_COMPILE"):
         try:
             logging.info(f"[torch.compile] Compiling {tag or model.__class__.__name__} …")
+            kwargs = {**COMPILE_KW, **kwargs, "mode": "max-autotune-no-cudagraphs"}
             return torch.compile(model, **(kwargs or COMPILE_KW))
         except Exception as err:
             logging.warning(f"[torch.compile] Failed for {tag}: {err}. Falling back to eager.")
@@ -799,9 +800,9 @@ def generate_fine(
                 del logits, codebook_preds
             # transfer over info into model_in and convert to numpy
             for nn in range(n_coarse, N_FINE_CODEBOOKS):
-                in_arr[
-                    start_fill_idx : start_fill_idx + (1024 - rel_start_fill_idx), nn
-                ] = in_buffer[0, rel_start_fill_idx:, nn]
+                in_arr[start_fill_idx : start_fill_idx + (1024 - rel_start_fill_idx), nn] = (
+                    in_buffer[0, rel_start_fill_idx:, nn]
+                )
             del in_buffer
         gen_fine_arr = in_arr.detach().cpu().numpy().squeeze().T
         del in_arr
@@ -826,12 +827,13 @@ def codec_decode(fine_tokens):
     if OFFLOAD_CPU:
         model.to(models_devices["codec"])
     device = next(model.parameters()).device
-    arr = torch.from_numpy(fine_tokens)[None]
-    arr = arr.to(device)
+    arr = torch.from_numpy(fine_tokens)[None].to(device)
     arr = arr.transpose(0, 1)
     emb = model.quantizer.decode(arr)
-    out = model.decoder(emb)
-    audio_arr = out.detach().cpu().numpy().squeeze()
+    # run decoder under no_grad only (not full inference_mode) so weight-norm hooks still see valid version counters
+    with torch.no_grad():
+        out = model.decoder(emb)
+    audio_arr = out.cpu().detach().numpy().squeeze()
     del arr, emb, out
     if OFFLOAD_CPU:
         model.to("cpu")
